@@ -115,6 +115,24 @@ function parseBoolean(env, key, fallback) {
     }
 }
 
+/**
+ * Optional fixed session ID. AITUNNEL keeps prompt caches at a specific provider, so a
+ * value that never changes gives the most reliable affinity. Max length is AITUNNEL's.
+ * @param {NodeJS.ProcessEnv} env
+ */
+function parseSessionId(env) {
+    const raw = env.SESSION_ID;
+    if (raw === undefined || raw.trim() === '') {
+        return null;
+    }
+
+    const value = raw.trim();
+    if (value.length > 256) {
+        throw new Error('SESSION_ID must be a string no longer than 256 characters');
+    }
+    return value;
+}
+
 function parseBaseUrl(rawValue) {
     let url;
     try {
@@ -169,6 +187,7 @@ export function getConfig(env = process.env) {
         cacheMode,
         cacheTtl,
         sessionAffinity: parseBoolean(env, 'SESSION_AFFINITY', DEFAULTS.sessionAffinity),
+        sessionId: parseSessionId(env),
         prefixDiffLog: parseBoolean(env, 'PREFIX_DIFF_LOG', DEFAULTS.prefixDiffLog),
         maxBodyBytes: parseInteger(env, 'MAX_BODY_BYTES', DEFAULTS.maxBodyBytes, { min: 1, max: 1024 * 1024 * 1024 }),
         upstreamTimeoutMs: parseInteger(env, 'UPSTREAM_TIMEOUT_MS', DEFAULTS.upstreamTimeoutMs, { min: 0, max: 24 * 60 * 60 * 1000 }),

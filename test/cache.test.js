@@ -69,20 +69,53 @@ test('does not add proxy cache markers when cache mode is off', () => {
     assert.equal(typeof body.session_id, 'string');
 });
 
-test('session ID is deterministic, opaque, and changes with the conversation prefix', () => {
+test('session ID is deterministic and opaque', () => {
     const body = {
         model: 'claude-sonnet-4.6',
         system: 'Private system prompt text',
         messages: [{ role: 'user', content: 'Private first message text' }],
     };
     const first = createSessionId(body, key);
-    const second = createSessionId(structuredClone(body), key);
-    const changed = createSessionId({ ...body, messages: [{ role: 'user', content: 'A different first message' }] }, key);
 
-    assert.equal(first, second);
-    assert.notEqual(first, changed);
+    assert.equal(first, createSessionId(structuredClone(body), key));
     assert.match(first, /^st_[0-9a-f]{64}$/);
     assert.doesNotMatch(first, /Private/);
+});
+
+test('session ID survives a changing newest message, because that would reset provider affinity', () => {
+    // SillyTavern rewrites the newest (and in a short chat, first) message every turn.
+    // The derived ID must not move with it, or AITUNNEL affinity resets on every request.
+    const body = {
+        model: 'claude-sonnet-4.6',
+        system: 'Stable character system prompt',
+        messages: [{ role: 'user', content: 'Turn one' }],
+    };
+    const nextTurn = {
+        model: 'claude-sonnet-4.6',
+        system: 'Stable character system prompt',
+        messages: [
+            { role: 'user', content: 'Turn one' },
+            { role: 'assistant', content: 'A reply' },
+            { role: 'user', content: 'Turn two' },
+        ],
+    };
+
+    assert.equal(createSessionId(body, key), createSessionId(nextTurn, key));
+});
+
+test('session ID still tracks the system prompt when there is one', () => {
+    const withSystem = createSessionId({ model: 'claude-sonnet-4.6', system: 'Character A', messages: [] }, key);
+    const otherSystem = createSessionId({ model: 'claude-sonnet-4.6', system: 'Character B', messages: [] }, key);
+
+    assert.notEqual(withSystem, otherSystem);
+});
+
+test('SESSION_ID override pins affinity to one value', () => {
+    const body = { model: 'claude-sonnet-4.6', system: 'Any system prompt', messages: [] };
+    const result = addCacheAndAffinity(body, config({ sessionId: 'pinned-session' }));
+
+    assert.equal(result.sessionAction, 'configured');
+    assert.equal(body.session_id, 'pinned-session');
 });
 
 test('respects user-provided body or x-session-id affinity values', () => {

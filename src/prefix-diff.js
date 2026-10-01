@@ -40,7 +40,7 @@ function shortHash(value) {
  * Fingerprint the segments that form the cached prefix: the top-level system prompt
  * first, then each message in the order the model receives it.
  * @param {object} body
- * @returns {{label: string, hash: string}[]}
+ * @returns {{label: string, hash: string, role: string, size: number}[]}
  */
 export function segmentHashes(body) {
     const segments = [];
@@ -48,21 +48,41 @@ export function segmentHashes(body) {
         return segments;
     }
 
+    const add = (label, role, value) => {
+        const serialized = stableStringify(value);
+        segments.push({ label, role, size: serialized.length, hash: shortHash(serialized) });
+    };
+
     if (body.system !== undefined) {
-        segments.push({ label: 'system', hash: shortHash(stableStringify(body.system)) });
+        add('system', 'system', body.system);
     }
 
     const messages = Array.isArray(body.messages) ? body.messages : [];
     for (let i = 0; i < messages.length; i += 1) {
         const message = isObject(messages[i]) ? messages[i] : {};
         const role = typeof message.role === 'string' ? message.role : '?';
-        segments.push({
-            label: `msg[${i}] role=${role}`,
-            hash: shortHash(stableStringify({ role: message.role, content: message.content })),
-        });
+        add(`msg[${i}] role=${role}`, role, { role: message.role, content: message.content });
     }
 
     return segments;
+}
+
+/**
+ * Compact role census, e.g. "system:1,user:12,assistant:11".
+ * A missing assistant role means replies are not being sent back as separate messages.
+ * @param {{role: string}[]} segments
+ */
+export function rolesSummary(segments) {
+    const counts = new Map();
+    for (const segment of segments) {
+        counts.set(segment.role, (counts.get(segment.role) ?? 0) + 1);
+    }
+    return [...counts].map(([role, count]) => `${role}:${count}`).join(',');
+}
+
+/** @param {{size: number}[]} segments */
+function totalSize(segments) {
+    return segments.reduce((sum, segment) => sum + segment.size, 0);
 }
 
 /**
@@ -98,6 +118,8 @@ export function diffSegments(previous, next) {
             : (next[firstChangeIndex]?.label ?? previous[firstChangeIndex]?.label ?? null),
         previousHash: firstChangeIndex === -1 ? null : (previous[firstChangeIndex]?.hash ?? null),
         nextHash: firstChangeIndex === -1 ? null : (next[firstChangeIndex]?.hash ?? null),
+        previousSize: firstChangeIndex === -1 ? null : (previous[firstChangeIndex]?.size ?? null),
+        nextSize: firstChangeIndex === -1 ? null : (next[firstChangeIndex]?.size ?? null),
     };
 }
 
@@ -151,15 +173,18 @@ export function createPrefixTracker({ logger, enabled = false, maxSegments = 100
             }
 
             if (previousSegments === null) {
-                log(`[proxy] prefix baseline segments=${segments.length}`);
+                log(`[proxy] prefix baseline segments=${segments.length} roles=${rolesSummary(segments)} size=${totalSize(segments)}`);
             } else {
                 const diff = diffSegments(previousSegments, segments);
+                const before = totalSize(previousSegments);
+                const after = totalSize(segments);
+
                 if (!diff.changed) {
-                    log(`[proxy] prefix unchanged segments=${segments.length}`);
+                    log(`[proxy] prefix unchanged segments=${segments.length} size=${after}`);
                 } else if (!diff.rewritten) {
-                    log(`[proxy] prefix GREW ONLY segments=${diff.previousCount} -> ${diff.nextCount} (shared prefix intact; cache should hit)`);
+                    log(`[proxy] prefix GREW ONLY segments=${diff.previousCount} -> ${diff.nextCount} roles=${rolesSummary(segments)} size=${before} -> ${after} (shared prefix intact; cache should hit)`);
                 } else {
-                    log(`[proxy] prefix REWRITTEN at ${diff.label} ${diff.previousHash} -> ${diff.nextHash} (segments ${diff.previousCount} -> ${diff.nextCount})`);
+                    log(`[proxy] prefix REWRITTEN at ${diff.label} ${diff.previousHash} -> ${diff.nextHash} (segments ${diff.previousCount} -> ${diff.nextCount}, segment size ${diff.previousSize} -> ${diff.nextSize}, total ${before} -> ${after})`);
                 }
             }
 

@@ -72,24 +72,40 @@ function canonicalize(value) {
     );
 }
 
+/**
+ * Build the anchor used to derive a session ID.
+ *
+ * Provider affinity needs an ID that stays identical for the whole conversation, so the
+ * anchor must only use parts of the request that do not change between turns. The system
+ * prompt is the only such part: in a short chat the first non-system message *is* the
+ * newest message, and SillyTavern rewrites it on every turn, which made the derived ID
+ * change every request and reset provider affinity along with it.
+ * @param {object} body
+ */
 function getSessionAnchor(body) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const systemMessage = messages.find(message => isObject(message) && ['system', 'developer'].includes(message.role));
-    const firstNonSystemMessage = messages.find(message => isObject(message) && !['system', 'developer'].includes(message.role));
+    const systemPrompt = body.system ?? (systemMessage ? { role: systemMessage.role, content: systemMessage.content } : null);
+
+    if (systemPrompt !== null && systemPrompt !== undefined) {
+        return { model: body.model, system: systemPrompt };
+    }
+
+    // Without a system prompt there is nothing more stable than the first message.
+    const firstMessage = messages.find(message => isObject(message));
 
     return {
         model: body.model,
-        system: body.system ?? (systemMessage ? { role: systemMessage.role, content: systemMessage.content } : null),
-        first: firstNonSystemMessage
-            ? { role: firstNonSystemMessage.role, content: firstNonSystemMessage.content }
+        system: null,
+        first: firstMessage
+            ? { role: firstMessage.role, content: firstMessage.content }
             : (typeof body.prompt === 'string' ? { role: 'user', content: body.prompt } : null),
     };
 }
 
 /**
- * Produce an opaque, stable session ID from the first system and non-system messages.
- * AITUNNEL documents the same messages as its default conversation identity; the HMAC
- * keeps prompt text and the upstream API key out of the value sent over the wire.
+ * Produce an opaque, stable session ID from the model and the system prompt.
+ * The HMAC keeps prompt text and the upstream API key out of the value sent over the wire.
  * @param {object} body
  * @param {string} secret
  */
@@ -141,6 +157,9 @@ export function addCacheAndAffinity(body, config, headers = {}) {
             if (typeof headerSessionId === 'string' && headerSessionId.length > 0) {
                 body.session_id = headerSessionId;
                 sessionAction = 'copied';
+            } else if (typeof config.sessionId === 'string' && config.sessionId.length > 0) {
+                body.session_id = config.sessionId;
+                sessionAction = 'configured';
             } else {
                 body.session_id = createSessionId(body, config.aitunnelApiKey);
                 sessionAction = 'added';

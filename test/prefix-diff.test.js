@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPrefixTracker, diffSegments, segmentHashes } from '../src/prefix-diff.js';
+import { createPrefixTracker, diffSegments, rolesSummary, segmentHashes } from '../src/prefix-diff.js';
 
 function makeBody(messages, system) {
     const body = { model: 'claude-sonnet-4.6', messages };
@@ -23,6 +23,8 @@ test('fingerprints the system prompt before the messages, in request order', () 
 
     assert.equal(segments.length, 3);
     assert.equal(segments[0].label, 'system');
+    assert.equal(segments[0].role, 'system');
+    assert.equal(segments[0].size, segments[0].size);
     assert.equal(segments[1].label, 'msg[0] role=user');
     assert.equal(segments[2].label, 'msg[2]'.replace('2', '1') + ' role=assistant');
     assert.match(segments[0].hash, /^[0-9a-f]{8}$/);
@@ -86,11 +88,11 @@ test('logs a baseline, then growth, then a rewrite', () => {
     tracker.record(makeBody([{ role: 'user', content: 'CHANGED' }, { role: 'assistant', content: 'b' }]), 'st_stable');
 
     assert.match(logs[0], /^\[proxy\] session fingerprint=[0-9a-f]{8} \(baseline\)$/);
-    assert.match(logs[1], /^\[proxy\] prefix baseline segments=1$/);
+    assert.match(logs[1], /^\[proxy\] prefix baseline segments=1 roles=user:1 size=\d+$/);
     assert.match(logs[2], /^\[proxy\] session fingerprint=[0-9a-f]{8} \(stable\)$/);
-    assert.match(logs[3], /^\[proxy\] prefix GREW ONLY segments=1 -> 2 \(shared prefix intact; cache should hit\)$/);
+    assert.match(logs[3], /^\[proxy\] prefix GREW ONLY segments=1 -> 2 roles=user:1,assistant:1 size=\d+ -> \d+ \(shared prefix intact; cache should hit\)$/);
     assert.match(logs[4], /^\[proxy\] session fingerprint=[0-9a-f]{8} \(stable\)$/);
-    assert.match(logs[5], /^\[proxy\] prefix REWRITTEN at msg\[0\] role=user [0-9a-f]{8} -> [0-9a-f]{8} \(segments 2 -> 2\)$/);
+    assert.match(logs[5], /^\[proxy\] prefix REWRITTEN at msg\[0\] role=user [0-9a-f]{8} -> [0-9a-f]{8} \(segments 2 -> 2, segment size \d+ -> \d+, total \d+ -> \d+\)$/);
 });
 
 test('flags a session_id change because provider affinity can reset with it', () => {
@@ -123,4 +125,30 @@ test('fingerprints carry no prompt text, only short hashes and roles', () => {
     assert.doesNotMatch(serialized, new RegExp(secret));
     assert.match(serialized, /role=user/);
     assert.match(serialized, /^[0-9a-f]{8}$|[0-9a-f]{8}/);
+});
+
+test('reports a role census so missing assistant turns are visible', () => {
+    const segments = segmentHashes({
+        system: 'sys',
+        messages: [
+            { role: 'user', content: 'a' },
+            { role: 'assistant', content: 'b' },
+            { role: 'user', content: 'c' },
+        ],
+    });
+
+    assert.equal(rolesSummary(segments), 'system:1,user:2,assistant:1');
+});
+
+test('distinguishes a rewrite from growth by size, not just by hash', () => {
+    const { logs, logger } = captureLogs();
+    const tracker = createPrefixTracker({ logger, enabled: true });
+
+    // Same length, different content -> a dynamic value inside the segment.
+    tracker.record(makeBody([{ role: 'user', content: 'aaaa' }]), 'st_stable');
+    tracker.record(makeBody([{ role: 'user', content: 'bbbb' }]), 'st_stable');
+
+    assert.match(logs[3], /prefix REWRITTEN at msg\[0\] role=user/);
+    // Same size but a different hash is the signature of a dynamic macro (time, date, random).
+    assert.match(logs[3], /segment size (\d+) -> \1/);
 });
