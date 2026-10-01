@@ -1,0 +1,12 @@
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Runtime output
+*.log
+coverage/
