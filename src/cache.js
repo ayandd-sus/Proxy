@@ -119,6 +119,59 @@ export function createSessionId(body, secret) {
 }
 
 /**
+ * Place an explicit cache breakpoint on the last text block of the message *before* the
+ * final one, so the cached prefix excludes the newest message.
+ *
+ * Some SillyTavern setups append a large instruction block to the newest user message and
+ * move it again on the next turn, so that message is rewritten every request. AITUNNEL's
+ * automatic top-level marker puts the breakpoint on the last cacheable block, which
+ * includes that message, so the cached prefix never repeats. Excluding it makes the
+ * prefix stable: everything before the newest message is identical across turns.
+ *
+ * Mutates the message content in place, converting a plain string to a text block when
+ * needed, which is the documented AITUNNEL/Anthropic form for an explicit breakpoint.
+ *
+ * @param {object} body
+ * @param {'5m'|'1h'} ttl
+ * @returns {boolean} Whether a breakpoint was placed.
+ */
+export function addHistoryBreakpoint(body, ttl = '5m') {
+    const messages = Array.isArray(body?.messages) ? body.messages : [];
+    if (messages.length < 3) {
+        return false;
+    }
+
+    const target = messages[messages.length - 2];
+    if (!isObject(target)) {
+        return false;
+    }
+
+    if (typeof target.content === 'string') {
+        target.content = [{ type: 'text', text: target.content }];
+    }
+
+    if (!Array.isArray(target.content)) {
+        return false;
+    }
+
+    const marker = ttl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
+    for (let i = target.content.length - 1; i >= 0; i -= 1) {
+        const block = target.content[i];
+        const isTextBlock = isObject(block)
+            && (block.type === 'text' || block.type === undefined)
+            && typeof block.text === 'string';
+
+        if (isTextBlock) {
+            block.type = 'text';
+            block.cache_control = marker;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
  * Add AITUNNEL's top-level automatic Claude cache marker and/or stable session affinity.
  * Existing explicit Anthropic block markers are left untouched.
  * @param {object} body Parsed JSON request body; mutated in place.
@@ -133,14 +186,26 @@ export function addCacheAndAffinity(body, config, headers = {}) {
     }
 
     let cacheAction = 'off';
+    const topLevelMarker = () => (config.cacheTtl === '1h'
+        ? { type: 'ephemeral', ttl: '1h' }
+        : { type: 'ephemeral' });
+
     if (config.cacheMode === 'auto') {
         if (hasExplicitCacheControl(body)) {
             cacheAction = 'preserved';
         } else {
-            body.cache_control = config.cacheTtl === '1h'
-                ? { type: 'ephemeral', ttl: '1h' }
-                : { type: 'ephemeral' };
+            body.cache_control = topLevelMarker();
             cacheAction = 'added';
+        }
+    } else if (config.cacheMode === 'history') {
+        if (hasExplicitCacheControl(body)) {
+            cacheAction = 'preserved';
+        } else if (addHistoryBreakpoint(body, config.cacheTtl)) {
+            cacheAction = 'added-history';
+        } else {
+            // Too short to exclude the newest message; fall back to the automatic marker.
+            body.cache_control = topLevelMarker();
+            cacheAction = 'added-fallback';
         }
     } else if (hasExplicitCacheControl(body)) {
         cacheAction = 'preserved';

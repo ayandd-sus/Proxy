@@ -92,7 +92,7 @@ test('logs a baseline, then growth, then a rewrite', () => {
     assert.match(logs[2], /^\[proxy\] session fingerprint=[0-9a-f]{8} \(stable\)$/);
     assert.match(logs[3], /^\[proxy\] prefix GREW ONLY segments=1 -> 2 roles=user:1,assistant:1 size=\d+ -> \d+ \(shared prefix intact; cache should hit\)$/);
     assert.match(logs[4], /^\[proxy\] session fingerprint=[0-9a-f]{8} \(stable\)$/);
-    assert.match(logs[5], /^\[proxy\] prefix REWRITTEN at msg\[0\] role=user [0-9a-f]{8} -> [0-9a-f]{8} \(segments 2 -> 2, segment size \d+ -> \d+, total \d+ -> \d+\)$/);
+    assert.match(logs[5], /^\[proxy\] prefix REWRITTEN at msg\[0\] role=user [0-9a-f]{8} -> [0-9a-f]{8} \(segments 2 -> 2, roles=user:1,assistant:1, segment size \d+ -> \d+, total \d+ -> \d+\)$/);
 });
 
 test('flags a session_id change because provider affinity can reset with it', () => {

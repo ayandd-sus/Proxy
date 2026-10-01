@@ -184,7 +184,7 @@ export function createPrefixTracker({ logger, enabled = false, maxSegments = 100
                 } else if (!diff.rewritten) {
                     log(`[proxy] prefix GREW ONLY segments=${diff.previousCount} -> ${diff.nextCount} roles=${rolesSummary(segments)} size=${before} -> ${after} (shared prefix intact; cache should hit)`);
                 } else {
-                    log(`[proxy] prefix REWRITTEN at ${diff.label} ${diff.previousHash} -> ${diff.nextHash} (segments ${diff.previousCount} -> ${diff.nextCount}, segment size ${diff.previousSize} -> ${diff.nextSize}, total ${before} -> ${after})`);
+                    log(`[proxy] prefix REWRITTEN at ${diff.label} ${diff.previousHash} -> ${diff.nextHash} (segments ${diff.previousCount} -> ${diff.nextCount}, roles=${rolesSummary(segments)}, segment size ${diff.previousSize} -> ${diff.nextSize}, total ${before} -> ${after})`);
                 }
             }
 

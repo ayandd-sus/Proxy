@@ -169,8 +169,8 @@ export function getConfig(env = process.env) {
     }
 
     const cacheMode = (env.CACHE_MODE || DEFAULTS.cacheMode).trim().toLowerCase();
-    if (!['auto', 'off'].includes(cacheMode)) {
-        throw new Error('CACHE_MODE must be auto or off');
+    if (!['auto', 'off', 'history'].includes(cacheMode)) {
+        throw new Error('CACHE_MODE must be auto, history, or off');
     }
 
     const cacheTtl = (env.CACHE_TTL || DEFAULTS.cacheTtl).trim().toLowerCase();

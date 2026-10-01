@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addCacheAndAffinity, createSessionId, hasExplicitCacheControl, isClaudeModel } from '../src/cache.js';
+import { addCacheAndAffinity, addHistoryBreakpoint, createSessionId, hasExplicitCacheControl, isClaudeModel } from '../src/cache.js';
 
 const key = 'sk-aitunnel-test-secret';
 
@@ -127,4 +127,71 @@ test('respects user-provided body or x-session-id affinity values', () => {
 
     assert.equal(addCacheAndAffinity(headerSession, config(), { sessionId: 'header-session' }).sessionAction, 'copied');
     assert.equal(headerSession.session_id, 'header-session');
+});
+
+test('history mode places an explicit breakpoint before the newest message', () => {
+    const body = {
+        model: 'claude-sonnet-4.6',
+        messages: [
+            { role: 'system', content: 'Stable system prompt' },
+            { role: 'user', content: 'Turn one' },
+            { role: 'assistant', content: 'A reply' },
+            { role: 'user', content: 'Turn two plus a big appended instruction block' },
+        ],
+    };
+
+    const result = addCacheAndAffinity(body, config({ cacheMode: 'history' }));
+
+    assert.equal(result.cacheAction, 'added-history');
+    assert.equal(Object.hasOwn(body, 'cache_control'), false);
+
+    // The breakpoint sits on the last message before the newest one.
+    assert.deepEqual(body.messages[2].content, [
+        { type: 'text', text: 'A reply', cache_control: { type: 'ephemeral' } },
+    ]);
+    // The newest message is left untouched, so rewriting it cannot invalidate the prefix.
+    assert.equal(body.messages[3].content, 'Turn two plus a big appended instruction block');
+});
+
+test('history mode honours the one-hour TTL and block-form content', () => {
+    const body = {
+        model: 'claude-sonnet-4.6',
+        messages: [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'one' },
+            { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+            { role: 'user', content: 'two' },
+        ],
+    };
+
+    addCacheAndAffinity(body, config({ cacheMode: 'history', cacheTtl: '1h' }));
+
+    assert.deepEqual(body.messages[2].content, [
+        { type: 'text', text: 'reply', cache_control: { type: 'ephemeral', ttl: '1h' } },
+    ]);
+});
+
+test('history mode falls back to the automatic marker on very short prompts', () => {
+    const body = { model: 'claude-sonnet-4.6', messages: [{ role: 'user', content: 'Only one' }] };
+    const result = addCacheAndAffinity(body, config({ cacheMode: 'history' }));
+
+    assert.equal(result.cacheAction, 'added-fallback');
+    assert.deepEqual(body.cache_control, { type: 'ephemeral' });
+});
+
+test('history mode leaves client-supplied cache markers alone', () => {
+    const body = {
+        model: 'claude-sonnet-4.6',
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+        messages: [
+            { role: 'user', content: 'one' },
+            { role: 'assistant', content: 'reply' },
+            { role: 'user', content: 'two' },
+        ],
+    };
+
+    const result = addCacheAndAffinity(body, config({ cacheMode: 'history' }));
+
+    assert.equal(result.cacheAction, 'preserved');
+    assert.equal(body.messages[1].content, 'reply');
 });
