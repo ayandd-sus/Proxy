@@ -8,6 +8,7 @@ const DEFAULTS = {
     cacheMode: 'auto',
     cacheTtl: '5m',
     sessionAffinity: true,
+    prefixDiffLog: false,
     maxBodyBytes: 128 * 1024 * 1024,
     upstreamTimeoutMs: 10 * 60 * 1000,
 };
@@ -168,6 +169,7 @@ export function getConfig(env = process.env) {
         cacheMode,
         cacheTtl,
         sessionAffinity: parseBoolean(env, 'SESSION_AFFINITY', DEFAULTS.sessionAffinity),
+        prefixDiffLog: parseBoolean(env, 'PREFIX_DIFF_LOG', DEFAULTS.prefixDiffLog),
         maxBodyBytes: parseInteger(env, 'MAX_BODY_BYTES', DEFAULTS.maxBodyBytes, { min: 1, max: 1024 * 1024 * 1024 }),
         upstreamTimeoutMs: parseInteger(env, 'UPSTREAM_TIMEOUT_MS', DEFAULTS.upstreamTimeoutMs, { min: 0, max: 24 * 60 * 60 * 1000 }),
     };

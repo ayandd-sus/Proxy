@@ -262,3 +262,58 @@ test('health check is unauthenticated and reveals no credential/config values', 
         await pair.close();
     }
 });
+
+test('prefix diff logging is opt-in and reports growth versus a rewrite (chat completions)', async () => {
+    const upstreamReply = JSON.stringify({
+        id: 'chatcmpl_test',
+        usage: { prompt_tokens: 4096, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 4096 } },
+    });
+
+    const send = async (pair, messages) => {
+        const response = await fetch(`${pair.url}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${LOCAL_KEY}` },
+            body: JSON.stringify({ model: 'claude-sonnet-4.6', messages }),
+        });
+        assert.equal(response.status, 200);
+        await response.text();
+    };
+
+    const history = [{ role: 'user', content: 'first turn' }];
+
+    const pair = await createPair(async (_request, response) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(upstreamReply);
+    }, { prefixDiffLog: true });
+
+    try {
+        await send(pair, [...history]);
+        await send(pair, [...history, { role: 'assistant', content: 'reply' }]);
+
+        const messages = pair.logs.filter(line => line.startsWith('[proxy] prefix'));
+        assert.equal(messages.length, 2);
+        assert.match(messages[0], /prefix baseline segments=1/);
+        assert.match(messages[1], /prefix GREW ONLY segments=1 -> 2/);
+
+        const sessions = pair.logs.filter(line => line.startsWith('[proxy] session fingerprint'));
+        assert.equal(sessions.length, 2);
+        assert.match(sessions[1], /\(stable\)/);
+    } finally {
+        await pair.close();
+    }
+
+    const quiet = await createPair(async (_request, response) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(upstreamReply);
+    });
+
+    try {
+        await send(quiet, [...history]);
+        await send(quiet, [...history, { role: 'assistant', content: 'reply' }]);
+        assert.equal(quiet.logs.filter(line => line.startsWith('[proxy] prefix')).length, 0);
+    } finally {
+        await quiet.close();
+    }
+});
