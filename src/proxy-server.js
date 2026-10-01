@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { addCacheAndAffinity } from './cache.js';
+import { createPrefixTracker } from './prefix-diff.js';
 import { createUsageObserver } from './usage-observer.js';
 
 const ROUTES = new Map([
@@ -229,6 +230,7 @@ function validateSessionValues(request, body) {
  * @param {{fetchImpl?: typeof fetch, logger?: Console}} [options]
  */
 export function createProxyServer(config, { fetchImpl = fetch, logger = console } = {}) {
+    const prefixTracker = createPrefixTracker({ logger, enabled: config.prefixDiffLog === true });
     const server = createServer(async (request, response) => {
         const startedAt = Date.now();
         let target;
@@ -286,6 +288,7 @@ export function createProxyServer(config, { fetchImpl = fetch, logger = console 
                     const result = addCacheAndAffinity(parsedBody, config, { sessionId: sessionHeader });
                     cacheAction = result.cacheAction;
                     sessionAction = result.sessionAction;
+                    prefixTracker.record(parsedBody, parsedBody.session_id);
                     requestBody = Buffer.from(JSON.stringify(parsedBody));
                 } else {
                     sessionHeader = getSessionHeader(request);

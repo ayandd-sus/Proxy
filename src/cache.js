@@ -72,24 +72,40 @@ function canonicalize(value) {
     );
 }
 
+/**
+ * Build the anchor used to derive a session ID.
+ *
+ * Provider affinity needs an ID that stays identical for the whole conversation, so the
+ * anchor must only use parts of the request that do not change between turns. The system
+ * prompt is the only such part: in a short chat the first non-system message *is* the
+ * newest message, and SillyTavern rewrites it on every turn, which made the derived ID
+ * change every request and reset provider affinity along with it.
+ * @param {object} body
+ */
 function getSessionAnchor(body) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const systemMessage = messages.find(message => isObject(message) && ['system', 'developer'].includes(message.role));
-    const firstNonSystemMessage = messages.find(message => isObject(message) && !['system', 'developer'].includes(message.role));
+    const systemPrompt = body.system ?? (systemMessage ? { role: systemMessage.role, content: systemMessage.content } : null);
+
+    if (systemPrompt !== null && systemPrompt !== undefined) {
+        return { model: body.model, system: systemPrompt };
+    }
+
+    // Without a system prompt there is nothing more stable than the first message.
+    const firstMessage = messages.find(message => isObject(message));
 
     return {
         model: body.model,
-        system: body.system ?? (systemMessage ? { role: systemMessage.role, content: systemMessage.content } : null),
-        first: firstNonSystemMessage
-            ? { role: firstNonSystemMessage.role, content: firstNonSystemMessage.content }
+        system: null,
+        first: firstMessage
+            ? { role: firstMessage.role, content: firstMessage.content }
             : (typeof body.prompt === 'string' ? { role: 'user', content: body.prompt } : null),
     };
 }
 
 /**
- * Produce an opaque, stable session ID from the first system and non-system messages.
- * AITUNNEL documents the same messages as its default conversation identity; the HMAC
- * keeps prompt text and the upstream API key out of the value sent over the wire.
+ * Produce an opaque, stable session ID from the model and the system prompt.
+ * The HMAC keeps prompt text and the upstream API key out of the value sent over the wire.
  * @param {object} body
  * @param {string} secret
  */
@@ -100,6 +116,59 @@ export function createSessionId(body, secret) {
         .update(anchor)
         .digest('hex');
     return `st_${digest}`;
+}
+
+/**
+ * Place an explicit cache breakpoint on the last text block of the message *before* the
+ * final one, so the cached prefix excludes the newest message.
+ *
+ * Some SillyTavern setups append a large instruction block to the newest user message and
+ * move it again on the next turn, so that message is rewritten every request. AITUNNEL's
+ * automatic top-level marker puts the breakpoint on the last cacheable block, which
+ * includes that message, so the cached prefix never repeats. Excluding it makes the
+ * prefix stable: everything before the newest message is identical across turns.
+ *
+ * Mutates the message content in place, converting a plain string to a text block when
+ * needed, which is the documented AITUNNEL/Anthropic form for an explicit breakpoint.
+ *
+ * @param {object} body
+ * @param {'5m'|'1h'} ttl
+ * @returns {boolean} Whether a breakpoint was placed.
+ */
+export function addHistoryBreakpoint(body, ttl = '5m') {
+    const messages = Array.isArray(body?.messages) ? body.messages : [];
+    if (messages.length < 3) {
+        return false;
+    }
+
+    const target = messages[messages.length - 2];
+    if (!isObject(target)) {
+        return false;
+    }
+
+    if (typeof target.content === 'string') {
+        target.content = [{ type: 'text', text: target.content }];
+    }
+
+    if (!Array.isArray(target.content)) {
+        return false;
+    }
+
+    const marker = ttl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
+    for (let i = target.content.length - 1; i >= 0; i -= 1) {
+        const block = target.content[i];
+        const isTextBlock = isObject(block)
+            && (block.type === 'text' || block.type === undefined)
+            && typeof block.text === 'string';
+
+        if (isTextBlock) {
+            block.type = 'text';
+            block.cache_control = marker;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -117,14 +186,26 @@ export function addCacheAndAffinity(body, config, headers = {}) {
     }
 
     let cacheAction = 'off';
+    const topLevelMarker = () => (config.cacheTtl === '1h'
+        ? { type: 'ephemeral', ttl: '1h' }
+        : { type: 'ephemeral' });
+
     if (config.cacheMode === 'auto') {
         if (hasExplicitCacheControl(body)) {
             cacheAction = 'preserved';
         } else {
-            body.cache_control = config.cacheTtl === '1h'
-                ? { type: 'ephemeral', ttl: '1h' }
-                : { type: 'ephemeral' };
+            body.cache_control = topLevelMarker();
             cacheAction = 'added';
+        }
+    } else if (config.cacheMode === 'history') {
+        if (hasExplicitCacheControl(body)) {
+            cacheAction = 'preserved';
+        } else if (addHistoryBreakpoint(body, config.cacheTtl)) {
+            cacheAction = 'added-history';
+        } else {
+            // Too short to exclude the newest message; fall back to the automatic marker.
+            body.cache_control = topLevelMarker();
+            cacheAction = 'added-fallback';
         }
     } else if (hasExplicitCacheControl(body)) {
         cacheAction = 'preserved';
@@ -141,6 +222,9 @@ export function addCacheAndAffinity(body, config, headers = {}) {
             if (typeof headerSessionId === 'string' && headerSessionId.length > 0) {
                 body.session_id = headerSessionId;
                 sessionAction = 'copied';
+            } else if (typeof config.sessionId === 'string' && config.sessionId.length > 0) {
+                body.session_id = config.sessionId;
+                sessionAction = 'configured';
             } else {
                 body.session_id = createSessionId(body, config.aitunnelApiKey);
                 sessionAction = 'added';
